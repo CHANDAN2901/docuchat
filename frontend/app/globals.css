@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+:root {
+  --paper: #f5f6f8;
+  --surface: #ffffff;
+  --ink: #1b1d1f;
+  --ink-soft: #5b6169;
+  --accent: #2449b3;
+  --accent-soft: #e8ecf9;
+  --mark: #e7a33e;
+  --mark-soft: #fbf1e0;
+  --line: #e2e4e8;
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-mark: var(--mark);
+  --color-mark-soft: var(--mark-soft);
+  --color-line: var(--line);
+  --font-sans: var(--font-plex-sans);
+  --font-serif: var(--font-plex-serif);
+}
+
+/* Light is the only mode for now — deliberately not following OS/browser
+   prefers-color-scheme, since the product is meant to default to white. */
+body {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.streaming-caret::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 2px;
+  background: var(--ink-soft);
+  vertical-align: text-bottom;
+  animation: blink 1s step-start infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 80%, 100% { opacity: 0.25; }
+  40% { opacity: 1; }
+}
+.thinking-dot {
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
