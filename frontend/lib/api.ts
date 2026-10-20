@@ -47,10 +47,15 @@ export const api = {
   me: () => request<User>("/api/auth/me"),
   documents: () => request<{ doc_ids: string[] }>("/api/documents"),
 
-  async upload(file: File): Promise<UploadResponse> {
+  async upload(file: File, apiKey: string): Promise<UploadResponse> {
     const form = new FormData();
     form.append("file", file);
-    const res = await fetch("/api/upload", { method: "POST", credentials: "include", body: form });
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      credentials: "include",
+      headers: { "X-OpenAI-Key": apiKey },
+      body: form,
+    });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}) as { detail?: Detail });
       throw new ApiError(res.status, readDetail(body.detail, `Upload failed (${res.status})`));

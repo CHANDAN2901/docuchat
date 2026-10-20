@@ -26,17 +26,23 @@ from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.vectorstores import VectorStore
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_qdrant import QdrantVectorStore, RetrievalMode, SparseEmbeddings, SparseVector
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient, models
-from sentence_transformers import SentenceTransformer
 
 from app.config import settings
 
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+# OpenAI's own embedding API (BYOK) rather than a local model — a local
+# sentence-transformers/torch install doesn't fit in a free-tier deploy's
+# RAM. Dimension is a fixed property of this model, so collection setup
+# below never needs an embeddings call (and thus never needs a user's key).
+_EMBEDDING_MODEL = "text-embedding-3-small"
+_EMBEDDING_DIM = 1536
+_VECTOR_NAME = "dense"
+_SPARSE_VECTOR_NAME = "sparse"
+_CHUNK_SIZE_TOKENS = 220  # retrieval-granularity choice, not a model limit
 # ponytail: fixed hashing-trick vocab size for the sparse vectors below —
 # collisions are rare at this size and harmless for keyword-overlap scoring.
 _SPARSE_DIM = 1 << 20
@@ -45,10 +51,6 @@ _TOKEN_RE = re.compile(r"\w+")
 # headers. A wrong "header" is just a slightly-off prefix, not corrupted
 # content, so a few false positives on an unusual document are harmless.
 _HEADER_RE = re.compile(r"^[A-Z][A-Z0-9 ,\-&]{3,80}$")
-# Reserved token budget for the "doc_id — section header" prefix added
-# below, so the full prefixed text still fits under the embedding model's
-# token limit instead of silently truncating it.
-_CONTEXT_BUDGET = 30
 
 _ANSWER_SYSTEM_PROMPT = (
     "You're continuing an ongoing conversation about the user's documents — earlier turns "
@@ -142,13 +144,10 @@ class KeywordSparseEmbeddings(SparseEmbeddings):
 
 
 @lru_cache
-def _embedding_model() -> SentenceTransformer:
-    return SentenceTransformer(EMBEDDING_MODEL_NAME)
-
-
-@lru_cache
-def _embeddings() -> HuggingFaceEmbeddings:
-    return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+def _embeddings(api_key: str) -> OpenAIEmbeddings:
+    """Keyed on the caller's own OpenAI key (bring-your-own-key), same as
+    `_llm` below — never a server-side key."""
+    return OpenAIEmbeddings(model=_EMBEDDING_MODEL, api_key=api_key)
 
 
 @lru_cache
@@ -158,11 +157,8 @@ def _sparse_embeddings() -> KeywordSparseEmbeddings:
 
 @lru_cache
 def _splitter() -> RecursiveCharacterTextSplitter:
-    # -2 for the [CLS]/[SEP] special tokens. -_CONTEXT_BUDGET to leave room
-    # for the doc_id/section-header prefix ingest_pdf() adds before embedding.
-    chunk_size = _embedding_model().max_seq_length - 2 - _CONTEXT_BUDGET
-    return RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
-        _embedding_model().tokenizer, chunk_size=chunk_size, chunk_overlap=20
+    return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+        encoding_name="cl100k_base", chunk_size=_CHUNK_SIZE_TOKENS, chunk_overlap=20
     )
 
 
@@ -190,32 +186,61 @@ def _llm(api_key: str) -> ChatOpenAI:
     return ChatOpenAI(model=settings().openai_model, api_key=api_key)
 
 
-def new_store(client_options: dict | None = None) -> VectorStore:
-    """Dense (MiniLM) + sparse (keyword) hybrid search. Qdrant fuses the two
+def _ensure_collection(client: QdrantClient, collection: str) -> None:
+    """Creates the collection (if missing) and the payload indexes every
+    retrieval filter needs (see `_owner_filter`) — Qdrant Cloud rejects a
+    filter on an unindexed field outright rather than falling back to a full
+    scan. Deliberately does this via the raw client rather than
+    `QdrantVectorStore.construct_instance`, which infers vector size by
+    calling the embeddings API (even just to validate an existing
+    collection) — this needs no key at all, so a brand-new user can list
+    their (empty) library before ever entering one. Re-running against an
+    already-set-up collection is a no-op, safe on every process start.
+    """
+    if not client.collection_exists(collection):
+        client.create_collection(
+            collection_name=collection,
+            vectors_config={_VECTOR_NAME: models.VectorParams(size=_EMBEDDING_DIM, distance=models.Distance.COSINE)},
+            sparse_vectors_config={_SPARSE_VECTOR_NAME: models.SparseVectorParams(modifier=models.Modifier.IDF)},
+        )
+    for field in ("metadata.owner_id", "metadata.doc_id"):
+        client.create_payload_index(
+            collection_name=collection, field_name=field, field_schema=models.PayloadSchemaType.KEYWORD
+        )
+
+
+def get_client(client_options: dict | None = None) -> QdrantClient:
+    """Raw client for metadata-only operations (listing doc_ids, dedup) that
+    need no embeddings and thus no user's OpenAI key. `client_options`
+    defaults to the live Qdrant Cloud cluster; tests pass
+    `{"location": ":memory:"}` instead."""
+    cfg = settings()
+    client = QdrantClient(**(client_options or {"url": cfg.qdrant_url, "api_key": cfg.qdrant_api_key}))
+    _ensure_collection(client, cfg.qdrant_collection)
+    return client
+
+
+def new_store(api_key: str, client_options: dict | None = None) -> VectorStore:
+    """Dense (OpenAI) + sparse (keyword) hybrid search. Qdrant fuses the two
     independently-searched result sets natively (RRF by default) rather than
     reranking a vector-only shortlist.
-
-    `client_options` defaults to the live Qdrant Cloud cluster; tests pass
-    `{"location": ":memory:"}` instead.
     """
     cfg = settings()
-    store = QdrantVectorStore.construct_instance(
-        embedding=_embeddings(),
+    client = get_client(client_options)
+    return QdrantVectorStore(
+        client=client,
+        collection_name=cfg.qdrant_collection,
+        embedding=_embeddings(api_key),
         sparse_embedding=_sparse_embeddings(),
         retrieval_mode=RetrievalMode.HYBRID,
-        client_options=client_options or {"url": cfg.qdrant_url, "api_key": cfg.qdrant_api_key},
-        collection_name=cfg.qdrant_collection,
-        sparse_vector_params={"modifier": models.Modifier.IDF},
+        vector_name=_VECTOR_NAME,
+        sparse_vector_name=_SPARSE_VECTOR_NAME,
+        validate_embeddings=False,
+        # Already ensured above without an embeddings call — construct_instance's
+        # equivalent check calls the embeddings API on every single construction
+        # just to confirm the vector size, which costs real money for no reason.
+        validate_collection_config=False,
     )
-    # Every retrieval call filters on both fields (see `_owner_filter`) — Qdrant
-    # Cloud rejects an unindexed filter field outright rather than falling back
-    # to a full scan, so both need an index. Re-creating an existing index is a
-    # no-op, so this is safe to run on every process start.
-    for field in ("metadata.owner_id", "metadata.doc_id"):
-        store.client.create_payload_index(
-            collection_name=cfg.qdrant_collection, field_name=field, field_schema=models.PayloadSchemaType.KEYWORD
-        )
-    return store
 
 
 def _owner_filter(owner_id: int, doc_id: str | None = None) -> models.Filter:

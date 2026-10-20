@@ -26,7 +26,9 @@ def test_user_b_cannot_see_user_as_uploaded_documents():
     bob = _signed_up("bob-iso@example.com")
 
     with FIXTURE.open("rb") as f:
-        upload = alice.post("/api/upload", files={"file": ("react-native-guide.pdf", f, "application/pdf")})
+        upload = alice.post(
+            "/api/upload", files={"file": ("react-native-guide.pdf", f, "application/pdf")}, headers={"X-OpenAI-Key": "sk-test"}
+        )
     assert upload.status_code == 200
     assert upload.json()["chunks"] > 0
 
@@ -40,7 +42,9 @@ def test_each_signup_gets_an_independent_document_namespace():
 
     for client in (alice, bob):
         with FIXTURE.open("rb") as f:
-            resp = client.post("/api/upload", files={"file": ("guide.pdf", f, "application/pdf")})
+            resp = client.post(
+                "/api/upload", files={"file": ("guide.pdf", f, "application/pdf")}, headers={"X-OpenAI-Key": "sk-test"}
+            )
         assert resp.json()["doc_id"] == "guide"  # same filename, same slug — no cross-user collision handling needed
 
     assert alice.get("/api/documents").json()["doc_ids"] == ["guide"]

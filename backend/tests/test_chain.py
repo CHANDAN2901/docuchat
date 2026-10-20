@@ -19,7 +19,7 @@ def test_keyword_sparse_embeddings_counts_terms_by_stable_hash():
 
 
 def test_hybrid_search_finds_exact_keyword_match_dense_search_would_miss():
-    store = chain.new_store(client_options=_MEMORY_QDRANT)
+    store = chain.new_store("sk-test", client_options=_MEMORY_QDRANT)
     store.add_documents(
         [
             Document(page_content="The penalty for late filing is a fine per day.", metadata={"doc_id": "d", "owner_id": "u1", "page": 1}),
@@ -34,7 +34,7 @@ def test_hybrid_search_finds_exact_keyword_match_dense_search_would_miss():
 
 
 def test_ingest_pdf_chunks_and_stores_real_pdf():
-    store = chain.new_store(client_options=_MEMORY_QDRANT)
+    store = chain.new_store("sk-test", client_options=_MEMORY_QDRANT)
 
     count = chain.ingest_pdf(Path("tests/fixtures/React_Native_Guide_Plain.pdf"), "rn-guide", "u1", store)
 
@@ -183,7 +183,7 @@ def test_extract_citations_verifies_against_real_chunk_text(monkeypatch):
 
 
 def test_retrieval_never_sees_another_owners_documents():
-    store = chain.new_store(client_options=_MEMORY_QDRANT)
+    store = chain.new_store("sk-test", client_options=_MEMORY_QDRANT)
     store.add_documents(
         [
             Document(page_content="Owner A's secret roadmap.", metadata={"doc_id": "a-doc", "owner_id": "owner-a", "page": 0}),

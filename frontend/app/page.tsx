@@ -53,12 +53,12 @@ export default function Dashboard() {
   }
 
   async function onUpload(files: FileList | null) {
-    if (!files || files.length === 0) return;
+    if (!files || files.length === 0 || !apiKey) return;
     setUploading(true);
     setUploadError(null);
     try {
       for (const file of Array.from(files)) {
-        await api.upload(file);
+        await api.upload(file, apiKey);
       }
       await refreshDocuments();
     } catch (err) {
@@ -128,15 +128,17 @@ export default function Dashboard() {
               type="file"
               accept="application/pdf"
               multiple
-              disabled={uploading}
+              disabled={uploading || !apiKey}
               onChange={(e) => onUpload(e.target.files)}
               className="hidden"
             />
             <label
               htmlFor="upload"
-              className="block cursor-pointer rounded-md border border-dashed border-line px-3 py-2 text-center text-sm text-ink-soft hover:border-accent hover:text-accent"
+              className={`block rounded-md border border-dashed border-line px-3 py-2 text-center text-sm ${
+                apiKey ? "cursor-pointer text-ink-soft hover:border-accent hover:text-accent" : "cursor-not-allowed text-ink-soft/50"
+              }`}
             >
-              {uploading ? "Uploading…" : "Upload a PDF"}
+              {uploading ? "Uploading…" : apiKey ? "Upload a PDF" : "Add your key to upload"}
             </label>
             {uploadError && <p className="mt-1.5 text-xs text-red-700">{uploadError}</p>}
 

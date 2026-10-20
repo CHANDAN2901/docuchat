@@ -16,13 +16,9 @@ dependencies = [
     "bcrypt>=4.2.0",
     "langchain>=0.3.0",
     "langchain-openai>=0.3.0",
-    "langchain-huggingface>=0.1.0",
     "langchain-community>=0.3.0",
     "langchain-text-splitters>=0.3.0",
     "pymupdf>=1.24.0",
-    "numpy<2.0",  # ponytail: torch<2.3 (Intel-Mac pin below) predates numpy 2.x ABI support
-    "sentence-transformers>=3.0.0,<4.0.0",  # ponytail: 4.x pulls a transformers that requires torch>=2.5
-    "torch<2.3.0",  # ponytail: pinned for Intel-Mac wheel availability; drop the pin on Linux-only hosts
     "qdrant-client>=1.9.0",
     "langchain-qdrant>=0.2.1",
 ]
@@ -36,14 +32,3 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-
-# Render runs Linux, where PyPI's default torch wheel pulls the full CUDA/cuDNN
-# stack (~2.6GB of unused nvidia-* packages — no GPU on Render). macOS wheels
-# are already CPU-only, so this only redirects the Linux resolve.
-[tool.uv.sources]
-torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true

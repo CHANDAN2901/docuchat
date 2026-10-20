@@ -6,13 +6,12 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
-from langchain_core.vectorstores import VectorStore
 from openai import AuthenticationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.auth import current_user
 from app.auth import router as auth_router
-from app.chain import extract_citations, ingest_pdf, list_doc_ids, new_store, retrieve_and_rerank, stream_answer
+from app.chain import extract_citations, get_client, ingest_pdf, list_doc_ids, new_store, retrieve_and_rerank, stream_answer
 from app.config import settings
 from app.models import User
 from app.schemas import AskRequest, CitationOut, DocumentsResponse, UploadResponse
@@ -25,12 +24,12 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings().trusted_hosts
 app.include_router(auth_router)
 
 
-@lru_cache
-def get_store() -> VectorStore:
-    # Lazy, not module-level-eager: connecting at import time would hit a
-    # real (or unconfigured) Qdrant Cloud URL before tests get a chance to
-    # swap this out for an in-memory store.
-    return new_store()
+# Lazy, not module-level-eager: connecting at import time would hit a real
+# (or unconfigured) Qdrant Cloud URL before tests get a chance to swap this
+# out for an in-memory store. get_client() needs no OpenAI key (listing/dedup
+# only); get_store() does, since it embeds — cached per-key like app.chain._llm.
+get_client = lru_cache(get_client)
+get_store = lru_cache(new_store)
 
 
 @app.middleware("http")
@@ -57,7 +56,7 @@ def _slugify(filename: str) -> str:
 
 
 def _unique_doc_id(base: str, owner_id: str) -> str:
-    existing = set(list_doc_ids(get_store().client, settings().qdrant_collection, owner_id))
+    existing = set(list_doc_ids(get_client(), settings().qdrant_collection, owner_id))
     if base not in existing:
         return base
     suffix = 2
@@ -67,7 +66,9 @@ def _unique_doc_id(base: str, owner_id: str) -> str:
 
 
 @app.post("/api/upload", response_model=UploadResponse)
-async def upload(file: UploadFile, user: User = Depends(current_user)):
+async def upload(file: UploadFile, user: User = Depends(current_user), x_openai_key: str | None = Header(default=None)):
+    if not x_openai_key:
+        raise HTTPException(400, "Missing OpenAI API key — add yours in settings.")
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Only PDF files are supported.")
     content = await file.read()
@@ -77,7 +78,10 @@ async def upload(file: UploadFile, user: User = Depends(current_user)):
     with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
         tmp.write(content)
         tmp.flush()
-        chunks = ingest_pdf(Path(tmp.name), doc_id, user.id, get_store())
+        try:
+            chunks = ingest_pdf(Path(tmp.name), doc_id, user.id, get_store(x_openai_key))
+        except AuthenticationError:
+            raise HTTPException(400, "That OpenAI API key was rejected. Check it and try again.")
     if chunks == 0:
         raise HTTPException(400, "No extractable text found in that PDF.")
     return UploadResponse(doc_id=doc_id, chunks=chunks)
@@ -85,7 +89,7 @@ async def upload(file: UploadFile, user: User = Depends(current_user)):
 
 @app.get("/api/documents", response_model=DocumentsResponse)
 def documents(user: User = Depends(current_user)):
-    return DocumentsResponse(doc_ids=list_doc_ids(get_store().client, settings().qdrant_collection, user.id))
+    return DocumentsResponse(doc_ids=list_doc_ids(get_client(), settings().qdrant_collection, user.id))
 
 
 def _sse(event: dict) -> str:
@@ -96,7 +100,7 @@ def _stream_ask_events(
     question: str, doc_id: str | None, top_k: int, owner_id: str, api_key: str, history: list[tuple[str, str]]
 ):
     try:
-        docs = retrieve_and_rerank(question, get_store(), api_key, owner_id, top_k=top_k, doc_id=doc_id)
+        docs = retrieve_and_rerank(question, get_store(api_key), api_key, owner_id, top_k=top_k, doc_id=doc_id)
         answer = ""
         for delta in stream_answer(question, docs, api_key, history=history):
             answer += delta

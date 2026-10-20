@@ -6,13 +6,23 @@ FIXTURE = Path(__file__).parent / "fixtures" / "React_Native_Guide_Plain.pdf"
 
 
 def test_upload_rejects_non_pdf(signed_up_client):
-    resp = signed_up_client.post("/api/upload", files={"file": ("notes.txt", b"hello", "text/plain")})
+    resp = signed_up_client.post(
+        "/api/upload", files={"file": ("notes.txt", b"hello", "text/plain")}, headers={"X-OpenAI-Key": "sk-test"}
+    )
+    assert resp.status_code == 400
+
+
+def test_upload_without_openai_key_header_returns_400(signed_up_client):
+    with FIXTURE.open("rb") as f:
+        resp = signed_up_client.post("/api/upload", files={"file": ("guide.pdf", f, "application/pdf")})
     assert resp.status_code == 400
 
 
 def test_upload_then_list_documents(signed_up_client):
     with FIXTURE.open("rb") as f:
-        resp = signed_up_client.post("/api/upload", files={"file": ("react-native-guide.pdf", f, "application/pdf")})
+        resp = signed_up_client.post(
+            "/api/upload", files={"file": ("react-native-guide.pdf", f, "application/pdf")}, headers={"X-OpenAI-Key": "sk-test"}
+        )
 
     assert resp.status_code == 200
     body = resp.json()
@@ -72,7 +82,9 @@ def test_ask_streams_answer_deltas_then_a_citations_event(signed_up_client, monk
 def test_re_uploading_the_same_filename_gets_a_deduped_doc_id(signed_up_client):
     for _ in range(2):
         with FIXTURE.open("rb") as f:
-            resp = signed_up_client.post("/api/upload", files={"file": ("guide.pdf", f, "application/pdf")})
+            resp = signed_up_client.post(
+                "/api/upload", files={"file": ("guide.pdf", f, "application/pdf")}, headers={"X-OpenAI-Key": "sk-test"}
+            )
         assert resp.status_code == 200
 
     doc_ids = signed_up_client.get("/api/documents").json()["doc_ids"]
