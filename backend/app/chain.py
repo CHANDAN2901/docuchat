@@ -199,7 +199,7 @@ def new_store(client_options: dict | None = None) -> VectorStore:
     `{"location": ":memory:"}` instead.
     """
     cfg = settings()
-    return QdrantVectorStore.construct_instance(
+    store = QdrantVectorStore.construct_instance(
         embedding=_embeddings(),
         sparse_embedding=_sparse_embeddings(),
         retrieval_mode=RetrievalMode.HYBRID,
@@ -207,6 +207,15 @@ def new_store(client_options: dict | None = None) -> VectorStore:
         collection_name=cfg.qdrant_collection,
         sparse_vector_params={"modifier": models.Modifier.IDF},
     )
+    # Every retrieval call filters on both fields (see `_owner_filter`) — Qdrant
+    # Cloud rejects an unindexed filter field outright rather than falling back
+    # to a full scan, so both need an index. Re-creating an existing index is a
+    # no-op, so this is safe to run on every process start.
+    for field in ("metadata.owner_id", "metadata.doc_id"):
+        store.client.create_payload_index(
+            collection_name=cfg.qdrant_collection, field_name=field, field_schema=models.PayloadSchemaType.KEYWORD
+        )
+    return store
 
 
 def _owner_filter(owner_id: int, doc_id: str | None = None) -> models.Filter:
